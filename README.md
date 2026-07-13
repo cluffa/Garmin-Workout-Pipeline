@@ -1,63 +1,151 @@
 # Garmin Workout Pipeline
 
-[![PyPI](https://img.shields.io/pypi/v/garmin-workout-pipeline?color=blue)](https://pypi.org/project/garmin-workout-pipeline/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/k-schmidt/Garmin-Workout-Pipeline/blob/main/LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/k-schmidt/Garmin-Workout-Pipeline?style=social)](https://github.com/k-schmidt/Garmin-Workout-Pipeline)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+**One MCP server. 38 tools. Full Garmin Connect control.**
 
-**Stop clicking through Garmin Connect's UI to build every workout.** Define workouts in YAML, or just tell Claude what you want in plain English — then push them straight to your watch.
+Define structured workouts in YAML or plain English, push them to your watch,
+and query your entire training history — all through a single MCP server.
 
-Garmin Workout Pipeline is an open-source CLI and MCP server that compiles structured workout definitions into Garmin Connect API payloads. It supports running, cycling, and strength/cardio workouts with pace/HR/power zones, 84+ exercises, circuits, and weekly scheduling.
+Built by merging two projects:
 
-> **"Build me a Hyrox sim with 8 stations, 1km runs between each, and a 10-minute warmup."**
+| Original | Author | Role |
+|---|---|---|
+| [Garmin-Workout-Pipeline](https://github.com/k-schmidt/Garmin-Workout-Pipeline) | [Kyle Schmidt](https://github.com/k-schmidt) | Workout builder, compiler, YAML templates, MCP server |
+| [garmin-connect-mcp](https://pypi.org/project/garmin-connect-mcp/) | (PyPI) | Activity queries, health data, training analysis |
+
+Both are built on Kyle's [`garminconnect`](https://github.com/cyberjunky/python-garminconnect) Python library.
+
+> **"Build me a Hyrox sim with 8 stations and 1km runs between each."**
 >
-> That's a real prompt. The MCP server turns it into a fully structured Garmin workout and uploads it to your watch.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="MCP server demo — building a workout conversationally" width="800">
-</p>
-
----
-
-## Why This Exists
-
-If you've ever built a complex interval workout in Garmin Connect, you know the pain: endless dropdowns, no copy-paste, no version control, and good luck reusing that Hyrox sim you spent 15 minutes clicking together.
-
-This tool lets you:
-
-- **Write workouts as code** — YAML files you can version, share, and iterate on
-- **Build workouts conversationally** — tell Claude what you want via MCP, and it handles the structure
-- **Push to Garmin Connect in one command** — from terminal to watch in seconds
-- **Manage your training library** — list, schedule, and delete workouts programmatically
+> Then: **"How's my training looking this month?"**
+>
+> Same MCP server. Same conversation.
 
 ---
 
 ## Quickstart
 
 ```bash
-# Install
-pip install garmin-workout-pipeline
+# Install with uv (zero setup — resolves deps from lockfile)
+uv tool install git+https://github.com/cluffa/Garmin-Workout-Pipeline.git
+
+# Or clone and sync
+git clone https://github.com/cluffa/Garmin-Workout-Pipeline.git
+cd Garmin-Workout-Pipeline
+uv sync
 
 # Set credentials
 export GARMIN_EMAIL=you@example.com
 export GARMIN_PASSWORD=your-password
 
-# Push a workout to your watch
-gwp push workouts/templates/hyrox-sim.yaml --zones workouts/zones.yaml
+# Launch the MCP server
+garmin-mcp
 ```
-
-That's it. Workout is on Garmin Connect, ready to sync to your device.
 
 ---
 
-## Two Ways to Build Workouts
+## MCP Configuration
 
-### 1. YAML (version-controlled, repeatable)
+### pi / Claude Code
+
+```json
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/cluffa/Garmin-Workout-Pipeline.git", "garmin-mcp"],
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your-password"
+      },
+      "type": "stdio",
+      "directTools": true
+    }
+  }
+}
+```
+
+With `uvx`, there's no install step — uv fetches, caches, and runs in one shot.
+
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "garmin-mcp",
+      "env": {
+        "GARMIN_EMAIL": "you@example.com",
+        "GARMIN_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Tools — 38 total
+
+### Workout Builder (24 tools)
+
+| Category | Tools |
+|---|---|
+| **Workout CRUD** | `create_workout`, `get_workout`, `set_workout_name`, `clear_workout` |
+| **Steps** | `add_warmup`, `add_cooldown`, `add_run`, `add_bike`, `add_exercise`, `add_rest`, `add_recovery`, `remove_step` |
+| **Circuits** | `add_circuit`, `end_circuit` |
+| **Upload & Sync** | `preview_upload`, `upload_workout`, `list_workouts`, `delete_workout` |
+| **Workout Data** | `get_workout_details` — read full workout JSON from Garmin |
+| **Templates** | `save_yaml`, `load_template`, `list_templates` |
+| **Reference** | `list_exercises`, `get_zones`, `validate_workout` |
+
+### Data & Analysis (14 tools)
+
+| Category | Tools |
+|---|---|
+| **Activities** | `query_activities` — list/search with pagination · `get_activity_details` — splits, weather, HR zones |
+| **Health** | `query_health_summary` — stats, body battery, readiness · `query_sleep_data` · `query_heart_rate_data` · `query_activity_metrics` — steps, stress, SpO2 |
+| **Training** | `analyze_training_period` — volume, trends, type breakdown · `get_performance_metrics` — VO2 max, HRV, hill/endurance scores · `get_training_effect` · `compare_activities` |
+| **Profile** | `get_user_profile` — name, stats, PRs, devices · `query_goals_and_records` — goals, PRs, race predictions |
+| **Calendar** | `query_calendar_events` — races, scheduled workouts, training plan events |
+
+---
+
+## Architecture
+
+```
+pi / Claude ──MCP (stdio)──▶ garmin-mcp
+                                │
+                    ┌───────────┼───────────┐
+                    ▼           ▼           ▼
+              mcp_server.py  tools/*.py  compiler.py
+                    │           │           │
+                    └───────────┼───────────┘
+                                │
+                          GarminClient
+                          (safe_call wrapper)
+                                │
+                          garminconnect
+                          (Kyle Schmidt)
+                                │
+                         Garmin Connect API
+```
+
+**Key design decisions:**
+
+- **Single process** — was two MCP servers (workout builder + data queries). Merged into one to eliminate duplicate auth, reduce resource usage, and unify tool naming.
+- **Synchronous** — all tools are sync (no `async`/`await`). FastMCP handles concurrency. Simpler to write, debug, and test.
+- **Shared client** — `GarminClient` wraps `GarminSync` with a `safe_call()` method that lazily authenticates and handles errors (rate limits, auth expiry, 404s).
+- **Effort-based** — zones are optional. Workouts can prescribe by pace, HR, power, or effort anchors. The compiler resolves zone names to Garmin API target values.
+
+---
+
+## Workout Types
+
+### Running
 
 ```yaml
 name: "Threshold Intervals"
 type: running
-
 steps:
   - warmup: { duration: "10:00", zone: easy }
   - run: { distance: "1km", pace: { min: "6:25/mi", max: "6:40/mi" } }
@@ -66,91 +154,15 @@ steps:
   - cooldown: { duration: lap, zone: easy }
 ```
 
-### 2. Natural Language via MCP (conversational, fast)
-
-Connect the MCP server to Claude Desktop or Claude Code, then just describe what you want:
-
-> "Create a 5x1km workout at threshold pace with 2-minute recoveries, 10-minute warmup and cooldown"
-
-Claude builds the structured workout, previews it, and uploads it — all through conversation.
-
----
-
-## MCP Server Setup
-
-24 tools for full workout lifecycle management through any MCP-compatible client.
-
-### Claude Code
-
-```bash
-claude mcp add garmin-workouts \
-  -e GARMIN_EMAIL=your-email@example.com \
-  -e GARMIN_PASSWORD=your-password \
-  -- garmin-mcp
-```
-
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "garmin-workouts": {
-      "command": "garmin-mcp",
-      "env": {
-        "GARMIN_EMAIL": "your-email@example.com",
-        "GARMIN_PASSWORD": "your-password"
-      }
-    }
-  }
-}
-```
-
-<details>
-<summary><strong>All 24 MCP Tools</strong></summary>
-
-| Category | Tools |
-| --- | --- |
-| Workout | `create_workout`, `get_workout`, `set_workout_name`, `clear_workout` |
-| Steps | `add_warmup`, `add_cooldown`, `add_run`, `add_bike`, `add_exercise`, `add_rest`, `add_recovery`, `remove_step` |
-| Circuits | `add_circuit`, `end_circuit` |
-| Garmin Connect | `preview_upload`, `upload_workout`, `list_workouts`, `delete_workout` |
-| Reference | `list_exercises`, `get_zones`, `validate_workout` |
-| Templates | `save_yaml`, `load_template`, `list_templates` |
-
-</details>
-
----
-
-## CLI Reference
-
-```bash
-gwp push <file> --zones <zones.yaml>            # Upload workout to Garmin Connect
-gwp push <file> --zones <zones.yaml> --schedule 2026-04-29  # Upload + schedule
-gwp push <file> --zones <zones.yaml> --dry-run   # Preview JSON without uploading
-gwp validate <file> --zones <zones.yaml>          # Compile and validate only
-gwp list                                          # List workouts on Garmin Connect
-gwp delete <workout-id>                           # Delete a workout
-gwp zones --zones <zones.yaml>                    # Show resolved zone values
-```
-
----
-
-## Workout Types
-
-### Running
-
-Pace targets, HR zones, distance and time-based intervals.
+### Cycling
 
 ```yaml
-name: "Speed 400s"
-type: running
+name: "Sweet Spot"
+type: cycling
 steps:
-  - warmup: { duration: "10:00", zone: easy }
-  - run: { distance: "400m", pace: { min: "5:30/mi", max: "5:45/mi" } }
-  - recovery: { duration: "1:30" }
-  - cooldown: { duration: "10:00", zone: easy }
+  - warmup: { duration: "10:00", zone: z2 }
+  - bike: { duration: "20:00", zone: threshold }
+  - cooldown: { duration: "5:00" }
 ```
 
 ### Strength / Cardio
@@ -171,25 +183,12 @@ steps:
   - cooldown: { duration: lap, exercise: rowing_machine }
 ```
 
-### Cycling
-
-Power zones, FTP percentages, and duration-based blocks.
-
-```yaml
-name: "Sweet Spot"
-type: cycling
-steps:
-  - warmup: { duration: "10:00", zone: z2 }
-  - bike: { duration: "20:00", zone: threshold }
-  - cooldown: { duration: "5:00" }
-```
-
 ---
 
-## Step Types Reference
+## Step Reference
 
 | Type | End Conditions | Targets |
-| --- | --- | --- |
+|---|---|---|
 | `warmup` | duration, lap | zone, exercise |
 | `cooldown` | duration, lap | zone, exercise |
 | `run` | duration, distance, lap | zone, pace, hr |
@@ -203,31 +202,41 @@ steps:
 
 ## Zones
 
-Define your training zones once in `workouts/zones.yaml` with HR, pace, and power targets per sport. The compiler resolves zone names like `threshold`, `z2`, and `easy` to Garmin API target values.
+Define training zones once in `workouts/zones.yaml` with HR, pace, and power targets per sport:
+
+```yaml
+running:
+  pace_zones:
+    easy: { min: "9:00/mi", max: "10:30/mi" }
+    threshold: { min: "6:25/mi", max: "6:50/mi" }
+  hr_zones:
+    z1: { min: 110, max: 130 }
+    z2: { min: 130, max: 150 }
+    z3: { min: 150, max: 165 }
+    z4: { min: 165, max: 180 }
+    z5: { min: 180, max: 200 }
+
+cycling:
+  ftp: 250
+  power_zones:
+    z2: { min_pct: 55, max_pct: 75 }
+    threshold: { min_pct: 90, max_pct: 105 }
+```
+
+The compiler resolves names (like `threshold`, `z2`) to numeric Garmin API targets.
 
 ---
 
-## Installation Options
-
-### From PyPI (recommended)
+## CLI
 
 ```bash
-pip install garmin-workout-pipeline
-```
-
-### From GitHub
-
-```bash
-uv tool install git+https://github.com/k-schmidt/Garmin-Workout-Pipeline.git
-```
-
-### From Source
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone https://github.com/k-schmidt/Garmin-Workout-Pipeline.git
-cd Garmin-Workout-Pipeline
-uv sync
+gwp push <file> --zones <zones.yaml>              # Upload workout
+gwp push <file> --zones <zones.yaml> --schedule 2026-07-25  # Upload + schedule
+gwp push <file> --zones <zones.yaml> --dry-run     # Preview JSON
+gwp validate <file> --zones <zones.yaml>            # Compile and validate
+gwp list                                            # List workouts on Garmin
+gwp delete <workout-id>                             # Delete a workout
+gwp zones --zones <zones.yaml>                      # Show resolved zones
 ```
 
 ---
@@ -236,23 +245,23 @@ uv sync
 
 ```
 garmin_pipeline/
-  mcp_server.py          # MCP server for Claude Desktop/Code
-  cli.py                 # Click CLI (gwp command)
-  compiler.py            # Workout model → Garmin API JSON
-  exercises.py           # Exercise name → Garmin category/name registry
-  loader.py              # YAML parser with !include support
-  models.py              # Pydantic workout models
-  sync.py                # Garmin Connect auth and upload
-  zones.py               # Zone resolution (HR, pace, power)
-workouts/
-  zones.yaml             # Training zone definitions
-  templates/             # Workout YAML files
-tests/
-  fixtures/              # Golden reference JSON
-  test_compiler.py       # Compiler golden tests
-  test_loader.py         # YAML loading and !include
-  test_models.py         # Step parsing
-  test_zones.py          # Zone resolution
+├── mcp_server.py          # MCP server — 38 tools, entry point
+├── cli.py                 # CLI (gwp command)
+├── client.py              # GarminClient wrapper with safe_call()
+├── compiler.py            # Workout model → Garmin API JSON
+├── exercises.py           # 84+ exercise name → Garmin category registry
+├── loader.py              # YAML template parser
+├── models.py              # Pydantic step models
+├── sync.py                # Garmin Connect auth, upload, schedule, delete
+├── zones.py               # Zone resolution (HR, pace, power)
+├── time_utils.py          # Date parsing, range helpers
+├── pull.py                # Pull workouts from Garmin Connect
+└── tools/
+    ├── activities.py      # query_activities, get_activity_details
+    ├── calendar.py        # query_calendar_events — races, scheduled workouts
+    ├── health.py          # query_health_summary, sleep, HR, metrics
+    ├── profile.py         # get_user_profile, query_goals_and_records
+    └── training.py        # analyze_training_period, performance, compare
 ```
 
 ---
@@ -260,19 +269,14 @@ tests/
 ## Development
 
 ```bash
-uv run pytest -v              # run tests
-uv run ruff check . --fix     # lint
-uv run ruff format .          # format
+uv sync --dev          # install with dev dependencies
+uv run pytest -v       # run tests
+uv run ruff check .    # lint
+uv run mypy .          # type check
 ```
-
----
-
-## Contributing
-
-Contributions welcome. Open an issue or submit a PR — whether it's a new exercise, a workout template, a bug fix, or documentation improvement.
 
 ---
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — © Kyle Schmidt (original Garmin-Workout-Pipeline), with data tools adapted from garmin-connect-mcp.
