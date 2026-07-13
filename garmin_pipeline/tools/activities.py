@@ -2,83 +2,33 @@
 
 from __future__ import annotations
 
+import base64
 import json
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta
 
 from garmin_pipeline.client import GarminAPIError, get_client
 from garmin_pipeline.time_utils import parse_date_string
+from garmin_pipeline.tools._format import (
+    error_json,
+    fmt_dist,
+    fmt_dur,
+    fmt_elev,
+    project_activity,
+    to_json,
+)
 
 
-def _dist(m: float, unit: str) -> str:
-    if unit == "imperial":
-        return f"{m / 1609.34:.2f} mi"
-    return f"{m / 1000:.2f} km"
+def _decode_page(cursor: str | None) -> int:
+    if not cursor:
+        return 1
+    try:
+        return json.loads(base64.b64decode(cursor).decode()).get("page", 1)
+    except Exception:
+        return 1
 
 
-def _dur(s: float) -> str:
-    h, m = divmod(int(s), 3600)
-    m, sec = divmod(m, 60)
-    if h:
-        return f"{h}h {m}m {sec}s"
-    if m:
-        return f"{m}m {sec}s"
-    return f"{sec}s"
-
-
-def _pace(mps: float, unit: str) -> str:
-    if mps == 0:
-        return "N/A"
-    if unit == "imperial":
-        spm = 1609.34 / mps
-        return f"{int(spm // 60)}:{int(spm % 60):02d} /mi"
-    spk = 1000 / mps
-    return f"{int(spk // 60)}:{int(spk % 60):02d} /km"
-
-
-def _speed(mps: float, unit: str) -> str:
-    if unit == "imperial":
-        return f"{mps * 2.23694:.2f} mph"
-    return f"{mps * 3.6:.2f} km/h"
-
-
-def _format_activity(act: dict, unit: str = "metric") -> dict:
-    """Enrich an activity dict with formatted fields."""
-    a = dict(act)
-    if a.get("distance"):
-        a["distance"] = {"meters": a["distance"], "formatted": _dist(a["distance"], unit)}
-    if a.get("duration"):
-        a["duration"] = {"seconds": a["duration"], "formatted": _dur(a["duration"])}
-    if a.get("elevationGain"):
-        a["elevationGain"] = {"meters": a["elevationGain"],
-            "formatted": f"{a['elevationGain'] * 3.28084:.0f} ft" if unit == "imperial" else f"{a['elevationGain']:.0f} m"}
-    if a.get("averageSpeed"):
-        a["averageSpeed"] = {"mps": a["averageSpeed"],
-            "formatted_speed": _speed(a["averageSpeed"], unit),
-            "formatted_pace": _pace(a["averageSpeed"], unit)}
-    if a.get("startTimeLocal") and isinstance(a["startTimeLocal"], str):
-        try:
-            dt = datetime.fromisoformat(a["startTimeLocal"].replace("Z", "+00:00"))
-            a["startTimeLocal"] = {"datetime": a["startTimeLocal"], "date": dt.strftime("%Y-%m-%d"),
-                "day_of_week": dt.strftime("%A"), "formatted": dt.strftime("%A, %B %d, %Y at %I:%M %p")}
-        except Exception:
-            pass
-    if a.get("startTimeGMT") and isinstance(a["startTimeGMT"], str):
-        try:
-            dt = datetime.fromisoformat(a["startTimeGMT"].replace("Z", "+00:00"))
-            a["startTimeGMT"] = {"datetime": a["startTimeGMT"], "date": dt.strftime("%Y-%m-%d"),
-                "day_of_week": dt.strftime("%A"), "formatted": dt.strftime("%A, %B %d, %Y at %I:%M %p")}
-        except Exception:
-            pass
-    if a.get("averageHR"):
-        a["heart_rate"] = {"avg_bpm": round(a["averageHR"])}
-    if a.get("maxHR"):
-        a.setdefault("heart_rate", {})["max_bpm"] = round(a["maxHR"])
-    if a.get("avgPower"):
-        a["power"] = {"avg_watts": round(a["avgPower"])}
-    if a.get("maxPower"):
-        a.setdefault("power", {})["max_watts"] = round(a["maxPower"])
-    return a
+def _encode_page(page: int) -> str:
+    return base64.b64encode(json.dumps({"page": page}).encode()).decode()
 
 
 def query_activities(
@@ -90,45 +40,20 @@ def query_activities(
     limit: str | int | None = None,
     activity_type: str = "",
     unit: str = "metric",
+    raw: bool = False,
 ) -> str:
-    """Query activities with flexible parameters and pagination support.
+    """Query activities: by ID, date range, single date, or last 7 days (default).
 
-    This unified tool supports multiple query patterns:
-    1. Get specific activity: provide activity_id
-    2. Get activities by date range: provide start_date and end_date (paginated)
-    3. Get activities for specific date: provide date
-    4. Get paginated activities: use cursor and limit
-    5. Get last activity: no parameters
+    Optionally filter by activity_type (e.g. 'running', 'cycling'). Results are
+    paginated: pass pagination.cursor back to get the next page while
+    pagination.has_more is true.
 
-    All queries can be filtered by activity_type (e.g., 'running', 'cycling').
-
-    Pagination:
-    For large time ranges, use pagination to retrieve all activities:
-    1. Make initial request without cursor
-    2. Check response["pagination"]["has_more"]
-    3. Use response["pagination"]["cursor"] for next page
-
-    Returns: JSON string with structure:
-    {
-        "data": {
-            "activity": {...}       // Single activity mode
-            OR
-            "activities": [...],    // List mode
-            "count": N
-        },
-        "pagination": {             // List mode only (when paginated)
-            "cursor": "...",
-            "has_more": true,
-            "limit": 20,
-            "returned": 20
-        },
-        "metadata": {...}
-    }
+    Returns compact summaries (distance, duration, pace, HR, power, training
+    effect, ...). Set raw=true for complete unabridged Garmin payloads (large).
     """
     try:
         client = get_client()
 
-        # Coerce limit
         if limit is not None:
             if isinstance(limit, str):
                 limit = int(limit)
@@ -139,81 +64,51 @@ def query_activities(
         # Single activity by ID
         if activity_id is not None:
             activity = client.safe_call("get_activity", activity_id)
-            formatted = _format_activity(activity, unit)
-            return json.dumps({
-                "data": {"activity": formatted},
-                "metadata": {"query_type": "single_activity", "activity_id": activity_id,
-                    "unit": unit, "fetched_at": datetime.now().isoformat()}
-            })
+            formatted = activity if raw else project_activity(activity, unit)
+            return to_json({"data": {"activity": formatted}})
 
         # Determine date range
         if date:
             dt = parse_date_string(date)
-            start = dt.strftime("%Y-%m-%d")
-            end = dt.strftime("%Y-%m-%d")
+            start = end = dt.strftime("%Y-%m-%d")
         elif start_date and end_date:
-            start = start_date
-            end = end_date
+            start, end = start_date, end_date
         elif start_date:
             start = start_date
             end = datetime.now().strftime("%Y-%m-%d")
         else:
-            # Default: last 7 days
-            from datetime import timedelta
             start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
             end = datetime.now().strftime("%Y-%m-%d")
 
-        # Parse cursor for page number
-        current_page = 1
-        if cursor:
-            try:
-                import base64
-                decoded = json.loads(base64.b64decode(cursor).decode())
-                current_page = decoded.get("page", 1)
-            except Exception:
-                pass
+        current_page = _decode_page(cursor)
 
-        # Fetch activities
         all_activities = client.safe_call("get_activities_by_date", start, end, activity_type)
         if not all_activities:
-            return json.dumps({
-                "data": {"activities": [], "count": 0},
-                "pagination": {"cursor": None, "has_more": False, "limit": limit, "returned": 0},
-                "metadata": {"query_type": "activity_list", "start_date": start, "end_date": end,
-                    "activity_type": activity_type, "unit": unit, "fetched_at": datetime.now().isoformat()}
+            return to_json({
+                "data": {"activities": [], "count": 0,
+                    "range": {"start": start, "end": end}},
+                "pagination": {"has_more": False},
             })
 
-        # Slice for pagination
         offset = (current_page - 1) * limit
         page = all_activities[offset:offset + limit + 1]
         has_more = len(page) > limit
         page = page[:limit]
 
-        formatted = [_format_activity(a, unit) for a in page]
+        formatted = page if raw else [project_activity(a, unit) for a in page]
 
-        # Build next cursor
-        next_cursor = None
-        if has_more:
-            import base64
-            next_cursor = base64.b64encode(
-                json.dumps({"page": current_page + 1}).encode()
-            ).decode()
-
-        return json.dumps({
+        return to_json({
             "data": {"activities": formatted, "count": len(formatted),
+                "range": {"start": start, "end": end},
                 "aggregated": _aggregate(page, unit)},
-            "pagination": {"cursor": next_cursor, "has_more": has_more,
-                "limit": limit, "returned": len(formatted)},
-            "metadata": {"query_type": "activity_list", "start_date": start, "end_date": end,
-                "activity_type": activity_type, "unit": unit, "fetched_at": datetime.now().isoformat()}
+            "pagination": {"cursor": _encode_page(current_page + 1) if has_more else None,
+                "has_more": has_more},
         })
 
     except GarminAPIError as e:
-        return json.dumps({"error": {"type": "api_error", "message": e.message,
-            "timestamp": datetime.now().isoformat()}})
+        return error_json("api_error", e.message)
     except Exception as e:
-        return json.dumps({"error": {"type": "internal_error", "message": str(e),
-            "timestamp": datetime.now().isoformat()}})
+        return error_json("internal_error", str(e))
 
 
 def _aggregate(activities: list, unit: str) -> dict:
@@ -225,10 +120,9 @@ def _aggregate(activities: list, unit: str) -> dict:
     total_e = sum(a.get("elevationGain", 0) or 0 for a in activities)
     return {
         "count": len(activities),
-        "total_distance": {"meters": total_d, "formatted": _dist(total_d, unit)},
-        "total_time": {"seconds": total_t, "formatted": _dur(total_t)},
-        "total_elevation": {"meters": total_e,
-            "formatted": f"{total_e * 3.28084:.0f} ft" if unit == "imperial" else f"{total_e:.0f} m"},
+        "total_distance": fmt_dist(total_d, unit),
+        "total_time": fmt_dur(total_t),
+        "total_elevation": fmt_elev(total_e, unit),
     }
 
 
@@ -240,54 +134,48 @@ def get_activity_details(
     include_gear: bool = True,
     include_exercise_sets: bool = False,
     unit: str = "metric",
+    raw: bool = False,
 ) -> str:
     """Get comprehensive details for a specific activity.
 
-    Fetch exactly the information you need about an activity with flexible
-    detail options.
-
-    By default, includes splits, weather, HR zones, and gear. Exercise sets
-    are only included when explicitly requested (useful for strength training).
-
-    When include_splits=True and the activity has only 1 lap, estimated km/mile
-    splits will be computed based on average pace.
+    By default includes summary, splits, weather, HR zones, and gear. Set
+    include_exercise_sets=true for strength training sets. Set raw=true to get
+    the complete unabridged Garmin activity payload (large).
     """
     try:
         client = get_client()
         activity = client.safe_call("get_activity", activity_id)
+
+        if raw:
+            result = activity
+            if include_exercise_sets:
+                result["exerciseSets"] = client.safe_call(
+                    "get_activity_exercise_sets", activity_id)
+            return to_json({"data": {"activity": result}})
+
         result = {"activityId": activity_id,
-            "activityUUID": {"uuid": activity.get("activityUUID", {}).get("uuid", "")},
             "activityName": activity.get("activityName", ""),
-            "activityTypeDTO": activity.get("activityTypeDTO", {}),
-            "eventTypeDTO": activity.get("eventTypeDTO", {}),
-            "summaryDTO": activity.get("summaryDTO", {}),
+            "activityType": activity.get("activityTypeDTO", {}).get("typeKey"),
+            "eventType": activity.get("eventTypeDTO", {}).get("typeKey"),
+            "summary": activity.get("summaryDTO", {}),
             "locationName": activity.get("locationName", ""),
         }
 
         if include_splits:
             result["splitSummaries"] = activity.get("splitSummaries", [])
         if include_weather:
-            result["weatherDTO"] = activity.get("weatherDTO")
+            result["weather"] = activity.get("weatherDTO")
         if include_hr_zones:
             result["hrTimeInZones"] = activity.get("hrTimeInZones", [])
         if include_gear:
-            result["gearDTO"] = activity.get("gearDTO")
+            result["gear"] = activity.get("gearDTO")
 
         if include_exercise_sets:
-            detail = client.safe_call("get_activity_exercise_sets", activity_id)
-            result["exerciseSets"] = detail
+            result["exerciseSets"] = client.safe_call(
+                "get_activity_exercise_sets", activity_id)
 
-        return json.dumps({
-            "data": {"activity": result},
-            "metadata": {"query_type": "activity_details", "activity_id": activity_id,
-                "unit": unit, "includes": {"splits": include_splits, "weather": include_weather,
-                    "hr_zones": include_hr_zones, "gear": include_gear,
-                    "exercise_sets": include_exercise_sets},
-                "fetched_at": datetime.now().isoformat()}
-        })
+        return to_json({"data": {"activity": result}})
     except GarminAPIError as e:
-        return json.dumps({"error": {"type": "api_error", "message": e.message,
-            "timestamp": datetime.now().isoformat()}})
+        return error_json("api_error", e.message)
     except Exception as e:
-        return json.dumps({"error": {"type": "internal_error", "message": str(e),
-            "timestamp": datetime.now().isoformat()}})
+        return error_json("internal_error", str(e))

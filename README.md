@@ -108,6 +108,11 @@ With `uvx`, there's no install step — uv fetches, caches, and runs in one shot
 | **Profile** | `get_user_profile` — name, stats, PRs, devices · `query_goals_and_records` — goals, PRs, race predictions |
 | **Calendar** | `query_calendar_events` — races, scheduled workouts, training plan events |
 
+Responses are token-optimized for LLM context: compact JSON, null fields omitted, curated
+summaries instead of raw Garmin payloads, and intraday time series (per-minute HR, sleep
+movement, stress arrays, ...) summarized into daily stats. Pass `raw=true` to any query tool
+to get the complete unabridged Garmin payload when you need it.
+
 ---
 
 ## Architecture
