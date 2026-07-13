@@ -28,7 +28,9 @@ def parse_time_range(period: str) -> tuple[datetime, datetime]:
             raise ValueError("Start date must be before or equal to end date")
         return start_date, end_date
 
-    raise ValueError(f"Invalid period: {period}. Use '7d', '30d', '90d', 'ytd', 'YYYY-MM-DD:YYYY-MM-DD'")
+    raise ValueError(
+        f"Invalid period: {period}. Use '7d', '30d', '90d', 'ytd', 'YYYY-MM-DD:YYYY-MM-DD'"
+    )
 
 
 def get_range_description(period: str) -> str:
@@ -58,8 +60,11 @@ def parse_date_string(date_str: str) -> datetime:
     if date_str == "today":
         return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     if date_str == "yesterday":
-        return (datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday = datetime.now() - timedelta(days=1)
+        return yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         return datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        raise ValueError(f"Invalid date: {date_str}. Use 'today', 'yesterday', or 'YYYY-MM-DD'")
+    except ValueError as e:
+        raise ValueError(
+            f"Invalid date: {date_str}. Use 'today', 'yesterday', or 'YYYY-MM-DD'"
+        ) from e

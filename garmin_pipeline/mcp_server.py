@@ -27,22 +27,23 @@ from garmin_pipeline.models import (
     Workout,
 )
 from garmin_pipeline.sync import GarminSync
-from garmin_pipeline.zones import ZoneConfig, load_zones
-from garmin_pipeline.tools.activities import query_activities, get_activity_details
+from garmin_pipeline.tools._format import strip_empty as _strip_empty
+from garmin_pipeline.tools.activities import get_activity_details, query_activities
+from garmin_pipeline.tools.calendar import query_calendar_events
 from garmin_pipeline.tools.health import (
     query_activity_metrics,
     query_health_summary,
     query_heart_rate_data,
     query_sleep_data,
 )
+from garmin_pipeline.tools.profile import get_user_profile, query_goals_and_records
 from garmin_pipeline.tools.training import (
     analyze_training_period,
     compare_activities,
     get_performance_metrics,
     get_training_effect,
 )
-from garmin_pipeline.tools.profile import get_user_profile, query_goals_and_records
-from garmin_pipeline.tools.calendar import query_calendar_events
+from garmin_pipeline.zones import ZoneConfig, load_zones
 
 load_dotenv()
 
@@ -148,6 +149,13 @@ def _format_workout() -> str:
     return "\n".join(lines)
 
 
+def _confirm_added(step: Any) -> str:
+    """One-line confirmation of an added step (get_workout shows the full plan)."""
+    n = len(_active_step_list())
+    where = f"circuit (depth {len(_circuit_stack)})" if _circuit_stack else "workout"
+    return f"Added to {where} as step {n}: {_format_step(step)}"
+
+
 # ---------------------------------------------------------------------------
 # Workout CRUD tools
 # ---------------------------------------------------------------------------
@@ -164,7 +172,7 @@ def create_workout(name: str, type: str) -> str:
     global _workout, _circuit_stack
     _circuit_stack = []
     _workout = Workout(name=name, type=SportType(type), steps=[])
-    return _format_workout()
+    return f"Created workout '{name}' ({type}). Add steps, then preview_upload."
 
 
 @mcp.tool()
@@ -176,7 +184,7 @@ def set_workout_name(name: str) -> str:
     """
     w = _require_workout()
     w.name = name
-    return _format_workout()
+    return f"Renamed workout to '{name}'."
 
 
 @mcp.tool()
@@ -214,10 +222,9 @@ def add_warmup(
         exercise: Exercise name for strength warmups (e.g. "rowing_machine").
         notes: Notes to display on the watch.
     """
-    _active_step_list().append(
-        WarmupStep(duration=duration, zone=zone, exercise=exercise, notes=notes)
-    )
-    return _format_workout()
+    step = WarmupStep(duration=duration, zone=zone, exercise=exercise, notes=notes)
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -235,10 +242,9 @@ def add_cooldown(
         exercise: Exercise name for strength cooldowns (e.g. "rowing_machine").
         notes: Notes to display on the watch.
     """
-    _active_step_list().append(
-        CooldownStep(duration=duration, zone=zone, exercise=exercise, notes=notes)
-    )
-    return _format_workout()
+    step = CooldownStep(duration=duration, zone=zone, exercise=exercise, notes=notes)
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -275,17 +281,16 @@ def add_run(
     if hr_min is not None and hr_max is not None:
         hr = {"min": hr_min, "max": hr_max}
 
-    _active_step_list().append(
-        RunStep(
-            duration=duration,
-            distance=distance,
-            zone=zone,
-            pace=pace,
-            hr=hr,
-            notes=notes,
-        )
+    step = RunStep(
+        duration=duration,
+        distance=distance,
+        zone=zone,
+        pace=pace,
+        hr=hr,
+        notes=notes,
     )
-    return _format_workout()
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -320,16 +325,15 @@ def add_bike(
     if power_pct_min is not None and power_pct_max is not None:
         power_pct = {"min": power_pct_min, "max": power_pct_max}
 
-    _active_step_list().append(
-        BikeStep(
-            duration=duration,
-            distance=distance,
-            zone=zone,
-            power=power,
-            power_pct=power_pct,
-        )
+    step = BikeStep(
+        duration=duration,
+        distance=distance,
+        zone=zone,
+        power=power,
+        power_pct=power_pct,
     )
-    return _format_workout()
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -352,16 +356,15 @@ def add_exercise(
         weight: Weight in lbs.
         notes: Notes to display on the watch (e.g. distance for carries).
     """
-    _active_step_list().append(
-        ExerciseStep(
-            exercise=exercise,
-            duration=duration,
-            reps=reps,
-            weight=weight,
-            notes=notes,
-        )
+    step = ExerciseStep(
+        exercise=exercise,
+        duration=duration,
+        reps=reps,
+        weight=weight,
+        notes=notes,
     )
-    return _format_workout()
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -371,8 +374,9 @@ def add_rest(duration: str) -> str:
     Args:
         duration: Rest duration as "M:SS" (e.g. "2:00" for 2 minutes).
     """
-    _active_step_list().append(RestStep(duration=duration))
-    return _format_workout()
+    step = RestStep(duration=duration)
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -388,8 +392,9 @@ def add_recovery(
         distance: Distance like "200m" for recovery jogs.
         zone: Training zone name (e.g. "z1", "easy").
     """
-    _active_step_list().append(RecoveryStep(duration=duration, distance=distance, zone=zone))
-    return _format_workout()
+    step = RecoveryStep(duration=duration, distance=distance, zone=zone)
+    _active_step_list().append(step)
+    return _confirm_added(step)
 
 
 @mcp.tool()
@@ -417,8 +422,12 @@ def end_circuit() -> str:
     """Close the current circuit. Subsequent steps will be added at the parent level."""
     if not _circuit_stack:
         return "Error: No open circuit to close."
-    _circuit_stack.pop()
-    return _format_workout()
+    closed = _circuit_stack.pop()
+    return (
+        f"Circuit closed ({len(closed)} steps). "
+        "Next steps go to the "
+        + (f"enclosing circuit (depth {len(_circuit_stack)})." if _circuit_stack else "workout.")
+    )
 
 
 @mcp.tool()
@@ -515,8 +524,8 @@ def list_workouts() -> str:
 def get_workout_details(workout_id: int) -> str:
     """Get the full structure of a workout by its Garmin ID.
 
-    Returns the complete workout JSON including all steps, circuits,
-    targets, and metadata. Use list_workouts to find workout IDs.
+    Returns the complete workout JSON (all steps, circuits, targets) as compact
+    JSON with null/empty fields omitted. Use list_workouts to find workout IDs.
 
     Args:
         workout_id: Garmin workout ID (from list_workouts).
@@ -525,7 +534,7 @@ def get_workout_details(workout_id: int) -> str:
     sync.login()
     try:
         workout = sync.client.get_workout_by_id(workout_id)
-        return json.dumps(workout, indent=2, default=str)
+        return json.dumps(_strip_empty(workout), separators=(",", ":"), default=str)
     except Exception as e:
         return f"Error: {e}"
 
@@ -610,11 +619,12 @@ def get_zones(sport_type: str | None = None) -> str:
 
 @mcp.tool()
 def validate_workout() -> str:
-    """Compile the current workout and return the Garmin API JSON for inspection."""
+    """Compile the current workout and return the Garmin API JSON for inspection
+    (compact; null/empty fields omitted)."""
     w = _require_workout()
     zone_config = _get_zone_config()
     compiled = compile_workout(w, zone_config)
-    return json.dumps(compiled, indent=2)
+    return json.dumps(_strip_empty(compiled), separators=(",", ":"))
 
 
 @mcp.tool()

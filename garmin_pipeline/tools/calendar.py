@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta
 from typing import Any
 
 from garmin_pipeline.client import GarminAPIError, get_client
+from garmin_pipeline.tools._format import error_json, to_json
 
 
 def query_calendar_events(
@@ -48,9 +48,11 @@ def query_calendar_events(
             try:
                 sw = client.safe_call("get_scheduled_workouts", current.year, current.month)
                 if isinstance(sw, dict) and "calendarItems" in sw:
+                    range_start = start.strftime("%Y-%m-%d")
+                    range_end = end.strftime("%Y-%m-%d")
                     for item in sw["calendarItems"]:
                         item_date = item.get("date", "")
-                        if item_date and start.strftime("%Y-%m-%d") <= item_date[:10] <= end.strftime("%Y-%m-%d"):
+                        if item_date and range_start <= item_date[:10] <= range_end:
                             key = f"{item_date[:10]}:{item.get('title', '')}"
                             if key in seen:
                                 continue
@@ -100,7 +102,7 @@ def query_calendar_events(
         # Sort by date
         events.sort(key=lambda e: e.get("date", "9999"))
 
-        # Count by type
+        # Count by type (races are flagged inline via is_race — not duplicated)
         races = [e for e in events if e.get("is_race")]
         workouts = [e for e in events if e.get("type") in ("workout", "scheduled_workout")]
         other = [e for e in events if e not in races and e not in workouts]
@@ -113,18 +115,16 @@ def query_calendar_events(
         if other:
             insights.append(f"  {len(other)} other event(s)")
 
-        return json.dumps({
+        return to_json({
             "data": {
                 "events": events,
                 "count": len(events),
-                "races": races,
                 "range": {"start": start.strftime("%Y-%m-%d"), "end": end.strftime("%Y-%m-%d")},
             },
             "analysis": {"insights": insights},
-            "metadata": {"fetched_at": datetime.now().isoformat()}
         })
 
     except GarminAPIError as e:
-        return json.dumps({"error": {"type": "api_error", "message": e.message}})
+        return error_json("api_error", e.message)
     except Exception as e:
-        return json.dumps({"error": {"type": "internal_error", "message": str(e)}})
+        return error_json("internal_error", str(e))
