@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timedelta
 from typing import Any
 
 from garmin_pipeline.client import GarminAPIError, get_client
@@ -170,9 +170,29 @@ def get_performance_metrics(
 
         if include_vo2_max:
             try:
-                result["vo2_max"] = client.safe_call("get_vo2_max_data", datetime.now().strftime("%Y-%m-%d"))
+                # VO2 max is embedded in activity data, not a standalone endpoint
+                activities = client.safe_call("get_activities_by_date",
+                    (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
+                    datetime.now().strftime("%Y-%m-%d"), "running")
+                vo2_vals = []
+                for a in (activities or [])[:50]:
+                    if a.get("vO2MaxValue"):
+                        vo2_vals.append({
+                            "date": a.get("startTimeLocal", "")[:10],
+                            "value": a["vO2MaxValue"],
+                            "activity_name": a.get("activityName", ""),
+                        })
+                if vo2_vals:
+                    latest = vo2_vals[0]
+                    result["vo2_max"] = {
+                        "latest": latest["value"],
+                        "date": latest["date"],
+                        "history": vo2_vals[:20],
+                    }
+                else:
+                    result["vo2_max"] = None
             except Exception:
-                result["vo2_max"] = []
+                result["vo2_max"] = None
 
         if include_hill_score:
             try:

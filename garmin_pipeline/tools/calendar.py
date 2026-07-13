@@ -16,10 +16,10 @@ def query_calendar_events(
 ) -> str:
     """Query upcoming Garmin calendar events (races, scheduled workouts, etc.).
 
-    Searches for events in your Garmin calendar including:
-    - Races and events you've registered for
-    - Scheduled workouts
-    - Training plan events
+    Searches your Garmin calendar for:
+    - Races and events you've registered for (via Garmin's event system)
+    - Scheduled workouts with dates
+    - All-day events
 
     Args:
         start_date: Range start (YYYY-MM-DD). Defaults to today.
@@ -40,93 +40,84 @@ def query_calendar_events(
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
         events: list[dict[str, Any]] = []
+        seen: set[str] = set()
 
-        # Try getting calendar events
-        try:
-            # Garmin API exposes scheduled workouts through get_workouts
-            workouts = client.safe_call("get_workouts")
-            if isinstance(workouts, list):
-                for w in workouts:
-                    # Check if workout has a scheduled date
-                    schedule_date = w.get("scheduledDate") or w.get("scheduleDate")
-                    if schedule_date:
-                        if isinstance(schedule_date, str):
-                            try:
-                                sd = datetime.fromisoformat(schedule_date.replace("Z", "+00:00"))
-                                schedule_date = sd.strftime("%Y-%m-%d")
-                            except Exception:
-                                pass
-                        if start.strftime("%Y-%m-%d") <= str(schedule_date)[:10] <= end.strftime("%Y-%m-%d"):
+        # Query scheduled workouts for each month in range
+        current = datetime(start.year, start.month, 1)
+        while current <= end:
+            try:
+                sw = client.safe_call("get_scheduled_workouts", current.year, current.month)
+                if isinstance(sw, dict) and "calendarItems" in sw:
+                    for item in sw["calendarItems"]:
+                        item_date = item.get("date", "")
+                        if item_date and start.strftime("%Y-%m-%d") <= item_date[:10] <= end.strftime("%Y-%m-%d"):
+                            key = f"{item_date[:10]}:{item.get('title', '')}"
+                            if key in seen:
+                                continue
+                            seen.add(key)
+
+                            item_type = item.get("itemType", "unknown")
+                            is_race = item.get("isRace", False)
+
+                            event = {
+                                "date": item_date[:10],
+                                "name": item.get("title", "Unnamed"),
+                                "type": "race" if is_race else item_type,
+                                "is_race": is_race,
+                                "sport_type_id": item.get("activityTypeId"),
+                                "url": item.get("url"),
+                            }
+                            if item.get("distance"):
+                                event["distance_meters"] = item["distance"]
+                            if item.get("duration"):
+                                event["duration_seconds"] = item["duration"]
+                            events.append(event)
+            except Exception:
+                pass
+            # Next month
+            if current.month == 12:
+                current = datetime(current.year + 1, 1, 1)
+            else:
+                current = datetime(current.year, current.month + 1, 1)
+
+        # Also check all-day events for each day (up to 60 days to avoid rate limits)
+        check_days = min((end - start).days + 1, 60)
+        for i in range(check_days):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            try:
+                day_events = client.safe_call("get_all_day_events", d)
+                if isinstance(day_events, list):
+                    for ev in day_events:
+                        if isinstance(ev, dict):
                             events.append({
-                                "type": "scheduled_workout",
-                                "name": w.get("workoutName", "Unnamed"),
-                                "date": str(schedule_date)[:10],
-                                "workout_id": w.get("workoutId"),
-                                "sport": w.get("sportType", {}).get("sportTypeKey", "unknown"),
+                                "date": d,
+                                "name": ev.get("eventName", ev.get("title", "Event")),
+                                "type": "all_day_event",
                             })
-        except Exception:
-            pass
-
-        # Try getting training plan events
-        try:
-            plan_events = client.safe_call("get_training_plan_calendar", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-            if isinstance(plan_events, list):
-                for e in plan_events:
-                    events.append({
-                        "type": "training_plan",
-                        "name": e.get("workoutName", e.get("name", "Training")),
-                        "date": e.get("date", e.get("scheduledDate", ""))[:10] if e.get("date") or e.get("scheduledDate") else "",
-                        "sport": e.get("sportType", {}).get("sportTypeKey", "unknown"),
-                    })
-        except Exception:
-            pass
-
-        # Try getting registered events/races
-        try:
-            # Some Garmin accounts have event registrations accessible
-            races = client.safe_call("get_events", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-            if isinstance(races, list):
-                for r in races:
-                    events.append({
-                        "type": "race",
-                        "name": r.get("eventName", r.get("name", "Event")),
-                        "date": r.get("eventDate", r.get("date", ""))[:10] if r.get("eventDate") or r.get("date") else "",
-                        "distance": r.get("distance"),
-                        "location": r.get("location", r.get("city", "")),
-                    })
-        except Exception:
-            pass
-
-        # Try personal events from calendar
-        try:
-            personal = client.safe_call("get_personal_events", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-            if isinstance(personal, list):
-                for p in personal:
-                    events.append({
-                        "type": "personal_event",
-                        "name": p.get("eventName", p.get("name", "Event")),
-                        "date": p.get("eventDate", p.get("date", ""))[:10] if p.get("eventDate") or p.get("date") else "",
-                    })
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # Sort by date
         events.sort(key=lambda e: e.get("date", "9999"))
 
         # Count by type
-        type_counts: dict[str, int] = {}
-        for e in events:
-            t = e["type"]
-            type_counts[t] = type_counts.get(t, 0) + 1
+        races = [e for e in events if e.get("is_race")]
+        workouts = [e for e in events if e.get("type") in ("workout", "scheduled_workout")]
+        other = [e for e in events if e not in races and e not in workouts]
 
-        insights = [f"{len(events)} upcoming event(s) in range"]
-        for t, c in type_counts.items():
-            insights.append(f"  {t}: {c}")
+        insights = [f"{len(events)} upcoming event(s)"]
+        if races:
+            insights.append(f"  {len(races)} race(s): {', '.join(r['name'] for r in races)}")
+        if workouts:
+            insights.append(f"  {len(workouts)} scheduled workout(s)")
+        if other:
+            insights.append(f"  {len(other)} other event(s)")
 
         return json.dumps({
             "data": {
                 "events": events,
                 "count": len(events),
+                "races": races,
                 "range": {"start": start.strftime("%Y-%m-%d"), "end": end.strftime("%Y-%m-%d")},
             },
             "analysis": {"insights": insights},

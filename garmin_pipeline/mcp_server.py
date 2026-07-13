@@ -512,6 +512,25 @@ def list_workouts() -> str:
 
 
 @mcp.tool()
+def get_workout_details(workout_id: int) -> str:
+    """Get the full structure of a workout by its Garmin ID.
+
+    Returns the complete workout JSON including all steps, circuits,
+    targets, and metadata. Use list_workouts to find workout IDs.
+
+    Args:
+        workout_id: Garmin workout ID (from list_workouts).
+    """
+    sync = GarminSync()
+    sync.login()
+    try:
+        workout = sync.client.get_workout_by_id(workout_id)
+        return json.dumps(workout, indent=2, default=str)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
 def delete_workout(workout_id: int) -> str:
     """Delete a workout from Garmin Connect.
 
