@@ -28,6 +28,21 @@ from garmin_pipeline.models import (
 )
 from garmin_pipeline.sync import GarminSync
 from garmin_pipeline.zones import ZoneConfig, load_zones
+from garmin_pipeline.tools.activities import query_activities, get_activity_details
+from garmin_pipeline.tools.health import (
+    query_activity_metrics,
+    query_health_summary,
+    query_heart_rate_data,
+    query_sleep_data,
+)
+from garmin_pipeline.tools.training import (
+    analyze_training_period,
+    compare_activities,
+    get_performance_metrics,
+    get_training_effect,
+)
+from garmin_pipeline.tools.profile import get_user_profile, query_goals_and_records
+from garmin_pipeline.tools.calendar import query_calendar_events
 
 load_dotenv()
 
@@ -659,6 +674,29 @@ def list_templates() -> str:
         lines.append(f"  {f.relative_to(Path.cwd())}")
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+# ===========================================================================
+# Data query tools (merged from garmin-connect-mcp)
+# ===========================================================================
+
+mcp.tool()(query_activities)
+mcp.tool()(get_activity_details)
+mcp.tool()(query_health_summary)
+mcp.tool()(query_sleep_data)
+mcp.tool()(query_heart_rate_data)
+mcp.tool()(query_activity_metrics)
+mcp.tool()(analyze_training_period)
+mcp.tool()(compare_activities)
+mcp.tool()(get_performance_metrics)
+mcp.tool()(get_training_effect)
+mcp.tool()(get_user_profile)
+mcp.tool()(query_goals_and_records)
+mcp.tool()(query_calendar_events)
 
 # ---------------------------------------------------------------------------
 # Entry point
