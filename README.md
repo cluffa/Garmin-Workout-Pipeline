@@ -84,7 +84,7 @@ With `uvx`, there's no install step — uv fetches, caches, and runs in one shot
 
 ---
 
-## Tools — 38 total
+## Tools — 39 total
 
 ### Workout Builder (24 tools)
 
@@ -94,14 +94,20 @@ With `uvx`, there's no install step — uv fetches, caches, and runs in one shot
 | **Steps** | `add_warmup`, `add_cooldown`, `add_run`, `add_bike`, `add_exercise`, `add_rest`, `add_recovery`, `remove_step` |
 | **Circuits** | `add_circuit`, `end_circuit` |
 | **Upload & Sync** | `preview_upload`, `upload_workout`, `list_workouts`, `delete_workout` |
+
+Uploaded workouts are auto-prefixed with the 🤖 agent-ownership tag. `delete_workout` refuses
+to delete untagged (athlete-created) workouts unless `force=true`, and `list_workouts` /
+`get_daily_briefing` mark each workout as agent- or athlete-owned — so agents can safely
+rewrite their own workouts while treating yours as read-only plan input.
 | **Workout Data** | `get_workout_details` — read full workout JSON from Garmin |
 | **Templates** | `save_yaml`, `load_template`, `list_templates` |
 | **Reference** | `list_exercises`, `get_zones`, `validate_workout` |
 
-### Data & Analysis (14 tools)
+### Data & Analysis (15 tools)
 
 | Category | Tools |
 |---|---|
+| **Daily briefing** | `get_daily_briefing` — one-call coaching snapshot: readiness (sleep, HRV, resting HR, body battery + pre-computed red flags), training status, yesterday's/today's activities, 7/28-day load, upcoming workouts and races. Built for automated daily check-in agents |
 | **Activities** | `query_activities` — list/search with pagination · `get_activity_details` — splits, weather, HR zones |
 | **Health** | `query_health_summary` — stats, body battery, readiness · `query_sleep_data` · `query_heart_rate_data` · `query_activity_metrics` — steps, stress, SpO2 |
 | **Training** | `analyze_training_period` — volume, trends, type breakdown · `get_performance_metrics` — VO2 max, HRV, hill/endurance scores · `get_training_effect` · `compare_activities` |
@@ -112,6 +118,8 @@ Responses are token-optimized for LLM context: compact JSON, null fields omitted
 summaries instead of raw Garmin payloads, and intraday time series (per-minute HR, sleep
 movement, stress arrays, ...) summarized into daily stats. Pass `raw=true` to any query tool
 to get the complete unabridged Garmin payload when you need it.
+
+Distances and paces default to **imperial (miles)**; pass `unit="metric"` for km.
 
 ---
 
@@ -263,6 +271,7 @@ garmin_pipeline/
 ├── pull.py                # Pull workouts from Garmin Connect
 └── tools/
     ├── activities.py      # query_activities, get_activity_details
+    ├── briefing.py        # get_daily_briefing — one-call daily snapshot
     ├── calendar.py        # query_calendar_events — races, scheduled workouts
     ├── health.py          # query_health_summary, sleep, HR, metrics
     ├── profile.py         # get_user_profile, query_goals_and_records

@@ -20,7 +20,7 @@ from garmin_pipeline.tools._format import (
 def analyze_training_period(
     period: str = "30d",
     activity_type: str = "",
-    unit: str = "metric",
+    unit: str = "imperial",
 ) -> str:
     """Analyze training over a period: total volume, activity type breakdown,
     weekly trends, and insights.
@@ -102,14 +102,29 @@ def analyze_training_period(
 
         # Insights
         insights = [f"{len(activities)} activities in {total_days} days"]
-        if len(weeks) >= 2:
-            first_wk = weeks[0]["distance_m"]
-            last_full = weeks[-2] if weeks[-1]["activities"] == 0 else weeks[-1]
-            last_wk = last_full["distance_m"]
-            if last_wk > first_wk * 1.05:
-                insights.append("Training volume increasing over time")
-            elif last_wk < first_wk * 0.95:
-                insights.append("Training volume decreasing over time")
+        full_weeks = [w for w in weeks
+                      if (datetime.strptime(w["week_end"], "%Y-%m-%d")
+                          - datetime.strptime(w["week_start"], "%Y-%m-%d")).days == 6]
+        if full_weeks:
+            avg_wk = sum(w["distance_m"] for w in full_weeks) / len(full_weeks)
+            insights.append(
+                f"Avg weekly volume: {fmt_dist(avg_wk, unit)} "
+                f"over {len(full_weeks)} full week(s)")
+            last_full = full_weeks[-1]
+            if len(full_weeks) >= 2 and avg_wk > 0:
+                prior = full_weeks[:-1]
+                prior_avg = sum(w["distance_m"] for w in prior) / len(prior)
+                if prior_avg > 0:
+                    delta = (last_full["distance_m"] - prior_avg) / prior_avg * 100
+                    insights.append(
+                        f"Last full week ({last_full['distance']}) vs prior avg: "
+                        f"{delta:+.0f}%")
+        longest = max(activities, key=lambda a: a.get("distance") or 0)
+        if longest.get("distance"):
+            insights.append(
+                f"Longest activity: {longest.get('activityName', 'Unnamed')} — "
+                f"{fmt_dist(longest['distance'], unit)} on "
+                f"{(longest.get('startTimeLocal') or '')[:10]}")
         dominant = max(by_type, key=lambda t: by_type[t]["count"])
         insights.append(f"Training primarily focused on {dominant}")
 
@@ -127,6 +142,24 @@ def analyze_training_period(
         return error_json("api_error", e.message)
     except Exception as e:
         return error_json("internal_error", str(e))
+
+
+def _drop_series(d: dict | None) -> dict | None:
+    """Keep a score endpoint's scalars and scalar-only sub-dicts; drop the
+    per-day/per-week history arrays (raw=True has them)."""
+    if not isinstance(d, dict):
+        return d
+    out: dict = {}
+    for k, v in d.items():
+        if isinstance(v, list):
+            continue
+        if isinstance(v, dict):
+            sub = {sk: sv for sk, sv in v.items() if not isinstance(sv, (dict, list))}
+            if sub:
+                out[k] = sub
+        else:
+            out[k] = v
+    return out
 
 
 def _act_in_range(act: dict, start: str, end: str) -> bool:
@@ -170,16 +203,16 @@ def get_performance_metrics(
                 vo2_vals = []
                 for a in (activities or [])[:50]:
                     if a.get("vO2MaxValue"):
-                        vo2_vals.append({
-                            "date": a.get("startTimeLocal", "")[:10],
-                            "value": a["vO2MaxValue"],
-                        })
+                        vo2_vals.append(
+                            (a.get("startTimeLocal", "")[:10], a["vO2MaxValue"]))
                 if vo2_vals:
-                    latest = vo2_vals[0]
+                    values = [v for _, v in vo2_vals]
                     result["vo2_max"] = {
-                        "latest": latest["value"],
-                        "date": latest["date"],
-                        "history": vo2_vals[:20],
+                        "latest": vo2_vals[0][1],
+                        "date": vo2_vals[0][0],
+                        "range_90d": {"min": min(values), "max": max(values),
+                                      "points": len(values)},
+                        "history": [[d, v] for d, v in vo2_vals] if raw else None,
                     }
                 else:
                     result["vo2_max"] = None
@@ -188,13 +221,15 @@ def get_performance_metrics(
 
         if include_hill_score:
             try:
-                result["hill_score"] = client.safe_call("get_hill_score")
+                hill = client.safe_call("get_hill_score")
+                result["hill_score"] = hill if raw else _drop_series(hill)
             except Exception:
                 result["hill_score"] = None
 
         if include_endurance_score:
             try:
-                result["endurance_score"] = client.safe_call("get_endurance_score")
+                endurance = client.safe_call("get_endurance_score")
+                result["endurance_score"] = endurance if raw else _drop_series(endurance)
             except Exception:
                 result["endurance_score"] = None
 
@@ -265,7 +300,7 @@ def get_training_effect(
 
 def compare_activities(
     activity_ids: str,
-    unit: str = "metric",
+    unit: str = "imperial",
 ) -> str:
     """Compare 2-5 activities side-by-side using compact summaries (distance,
     duration, pace, HR, power, training effect).

@@ -39,7 +39,7 @@ def query_activities(
     cursor: str | None = None,
     limit: str | int | None = None,
     activity_type: str = "",
-    unit: str = "metric",
+    unit: str = "imperial",
     raw: bool = False,
 ) -> str:
     """Query activities: by ID, date range, single date, or last 7 days (default).
@@ -133,7 +133,7 @@ def get_activity_details(
     include_hr_zones: bool = True,
     include_gear: bool = True,
     include_exercise_sets: bool = False,
-    unit: str = "metric",
+    unit: str = "imperial",
     raw: bool = False,
 ) -> str:
     """Get comprehensive details for a specific activity.

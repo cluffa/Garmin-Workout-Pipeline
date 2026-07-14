@@ -27,8 +27,14 @@ from garmin_pipeline.models import (
     Workout,
 )
 from garmin_pipeline.sync import GarminSync
-from garmin_pipeline.tools._format import strip_empty as _strip_empty
+from garmin_pipeline.tools._format import (
+    AGENT_TAG,
+    is_agent_workout,
+    strip_empty as _strip_empty,
+    tag_workout_name,
+)
 from garmin_pipeline.tools.activities import get_activity_details, query_activities
+from garmin_pipeline.tools.briefing import get_daily_briefing
 from garmin_pipeline.tools.calendar import query_calendar_events
 from garmin_pipeline.tools.health import (
     query_activity_metrics,
@@ -454,8 +460,10 @@ def preview_upload() -> str:
     """Preview the workout that would be uploaded to Garmin Connect.
 
     Always call this before upload_workout so the user can review and confirm.
+    The name shown includes the agent-ownership tag (🤖) that upload adds.
     """
     w = _require_workout()
+    w.name = tag_workout_name(w.name)
     zone_config = _get_zone_config()
     compiled = compile_workout(w, zone_config)
     steps = compiled["workoutSegments"][0]["workoutSteps"]
@@ -482,6 +490,10 @@ def upload_workout(confirm: bool, schedule_date: str | None = None) -> str:
     IMPORTANT: Always call preview_upload first and get explicit user confirmation
     before calling this tool. Replaces any existing workout with the same name.
 
+    The workout name is automatically prefixed with the agent-ownership tag
+    (🤖) — agents may later rewrite or delete tagged workouts; untagged
+    workouts are athlete-created and must be left alone.
+
     Args:
         confirm: Must be true. Confirms the user has approved the upload.
         schedule_date: Optional date to schedule the workout (YYYY-MM-DD).
@@ -490,6 +502,7 @@ def upload_workout(confirm: bool, schedule_date: str | None = None) -> str:
         return "Upload cancelled. Call preview_upload to review the workout first."
 
     w = _require_workout()
+    w.name = tag_workout_name(w.name)
     zone_config = _get_zone_config()
     compiled = compile_workout(w, zone_config)
 
@@ -505,7 +518,12 @@ def upload_workout(confirm: bool, schedule_date: str | None = None) -> str:
 
 @mcp.tool()
 def list_workouts() -> str:
-    """List all workouts on Garmin Connect."""
+    """List all workouts on Garmin Connect.
+
+    Workouts marked [agent] carry the 🤖 ownership tag and may be rewritten
+    or deleted by agents. Workouts marked [athlete] were created by the
+    athlete: never overwrite or delete them — take them into consideration.
+    """
     sync = GarminSync()
     sync.login()
     workouts = sync.list_workouts()
@@ -516,7 +534,8 @@ def list_workouts() -> str:
     lines = ["Workouts on Garmin Connect:", ""]
     for w in workouts:
         sport = w.get("sportType", {}).get("sportTypeKey", "unknown")
-        lines.append(f"  ID: {w['workoutId']} | {w['workoutName']} ({sport})")
+        owner = "agent" if is_agent_workout(w.get("workoutName")) else "athlete"
+        lines.append(f"  ID: {w['workoutId']} | {w['workoutName']} ({sport}) [{owner}]")
     return "\n".join(lines)
 
 
@@ -540,14 +559,36 @@ def get_workout_details(workout_id: int) -> str:
 
 
 @mcp.tool()
-def delete_workout(workout_id: int) -> str:
+def delete_workout(workout_id: int, force: bool = False) -> str:
     """Delete a workout from Garmin Connect.
+
+    Only agent-managed workouts (name starts with 🤖) can be deleted.
+    Untagged workouts are athlete-created: leave them alone and factor them
+    into planning instead. Pass force=true only when the user explicitly
+    asks to delete a workout of their own.
 
     Args:
         workout_id: Garmin workout ID (from list_workouts).
+        force: Allow deleting a workout without the 🤖 tag (requires the
+            user's explicit request).
     """
     sync = GarminSync()
     sync.login()
+
+    if not force:
+        try:
+            workout = sync.client.get_workout_by_id(workout_id)
+            name = (workout or {}).get("workoutName", "")
+        except Exception as e:
+            return f"Error: could not verify workout {workout_id} before delete: {e}"
+        if not is_agent_workout(name):
+            return (
+                f"Refused: workout {workout_id} ('{name}') has no {AGENT_TAG} tag, "
+                "so it is athlete-created. Do not overwrite it — take it into "
+                "consideration when planning. If the user explicitly asked to "
+                "delete it, call again with force=true."
+            )
+
     sync.delete(workout_id)
     return f"Deleted workout {workout_id}."
 
@@ -713,6 +754,7 @@ def list_templates() -> str:
 # Data query tools (merged from garmin-connect-mcp)
 # ===========================================================================
 
+mcp.tool()(get_daily_briefing)
 mcp.tool()(query_activities)
 mcp.tool()(get_activity_details)
 mcp.tool()(query_health_summary)
