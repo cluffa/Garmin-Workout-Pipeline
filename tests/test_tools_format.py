@@ -352,3 +352,203 @@ def test_curate_device():
     assert c["productDisplayName"] == "Forerunner 965"
     assert "supportedCapabilities" not in c
     assert "deviceSettings" not in c
+
+
+# ---------------------------------------------------------------------------
+# Sleep DTO trimming
+# ---------------------------------------------------------------------------
+
+
+def test_curate_sleep_drops_need_and_alignment_trims_scores():
+    sleep = {
+        "dailySleepDTO": {
+            "calendarDate": "2026-07-12",
+            "sleepTimeSeconds": 27000,
+            "sleepScores": {
+                "overall": {"value": 82, "qualifierKey": "GOOD"},
+                "deepPercentage": {"value": 23, "qualifierKey": "EXCELLENT",
+                                   "optimalStart": 16.0, "optimalEnd": 33.0,
+                                   "idealStartInSeconds": 4320.0},
+            },
+            "sleepNeed": {"baseline": 480, "actual": 480, "feedback": "x"},
+            "nextSleepNeed": {"baseline": 480, "actual": 480},
+            "sleepAlignment": {"status": "ALIGNED"},
+        },
+    }
+    c = _curate_sleep(sleep)
+    dto = c["dailySleepDTO"]
+    for gone in ("sleepNeed", "nextSleepNeed", "sleepAlignment"):
+        assert gone not in dto
+    assert dto["sleepScores"]["deepPercentage"] == {
+        "value": 23, "qualifierKey": "EXCELLENT"}
+
+
+# ---------------------------------------------------------------------------
+# Performance score trimming
+# ---------------------------------------------------------------------------
+
+
+def test_drop_series_keeps_scalars_drops_arrays():
+    from garmin_pipeline.tools.training import _drop_series
+
+    score = {
+        "overallScore": 73,
+        "strengthScore": 60,
+        "enduranceScoreDTO": {"classification": 3, "feedbackPhrase": "TRAINED"},
+        "weeklyScores": [{"week": 1, "score": 70}] * 26,
+        "deviceMap": {"123": {"nested": {"deep": 1}}},
+    }
+    c = _drop_series(score)
+    assert c["overallScore"] == 73
+    assert c["enduranceScoreDTO"]["classification"] == 3
+    assert "weeklyScores" not in c
+    assert "deviceMap" not in c  # only nested containers inside -> dropped
+
+
+# ---------------------------------------------------------------------------
+# Daily briefing helpers
+# ---------------------------------------------------------------------------
+
+from garmin_pipeline.tools.briefing import (  # noqa: E402
+    _load_window,
+    _readiness_flags,
+    _sleep_brief,
+)
+
+
+def _mk_sleep(duration_s=27000, score=82):
+    return {
+        "dailySleepDTO": {
+            "calendarDate": "2026-07-13",
+            "sleepTimeSeconds": duration_s,
+            "deepSleepSeconds": 5400,
+            "lightSleepSeconds": 14400,
+            "remSleepSeconds": 6000,
+            "awakeSleepSeconds": 1200,
+            "avgOvernightHrv": 58.0,
+            "sleepScores": {"overall": {"value": score, "qualifierKey": "GOOD"}},
+        },
+        "restingHeartRate": 47,
+        "bodyBatteryChange": 55,
+    }
+
+
+def test_sleep_brief_compacts():
+    b = _sleep_brief(_mk_sleep())
+    assert b["duration_s"] == 27000
+    assert b["score"] == 82
+    assert b["resting_hr"] == 47
+    assert b["body_battery_change"] == 55
+    assert b["overnight_hrv"] == 58.0
+
+
+def test_sleep_brief_none_when_no_sleep():
+    assert _sleep_brief({"dailySleepDTO": {"calendarDate": "2026-07-13"}}) is None
+    assert _sleep_brief(None) is None
+
+
+def test_readiness_flags_all_clear():
+    flags = _readiness_flags(
+        sleep={"duration_s": 27000, "score": 82},
+        hrv_summary={"lastNightAvg": 61, "status": "BALANCED",
+                     "baseline": {"balancedLow": 47}},
+        resting_hr=45, resting_hr_7d=44, body_battery_latest=90,
+        readiness={"score": 78, "level": "HIGH"},
+    )
+    assert flags == []
+
+
+def test_readiness_flags_fire():
+    flags = _readiness_flags(
+        sleep={"duration_s": 5 * 3600, "score": 50},
+        hrv_summary={"lastNightAvg": 40, "status": "LOW",
+                     "baseline": {"balancedLow": 47}},
+        resting_hr=52, resting_hr_7d=44, body_battery_latest=25,
+        readiness={"score": 20, "level": "LOW"},
+    )
+    assert "sleep_short" in flags
+    assert "sleep_score_low" in flags
+    assert "hrv_below_baseline" in flags
+    assert "hrv_status_low" in flags
+    assert "resting_hr_elevated" in flags
+    assert "body_battery_low" in flags
+    assert "training_readiness_low" in flags
+
+
+def test_readiness_flags_handles_missing_data():
+    assert _readiness_flags(None, None, None, None, None, None) == []
+
+
+def test_load_window_aggregates_runs():
+    acts = [
+        {"startTimeLocal": "2026-07-12 07:00:00", "distance": 10000.0,
+         "duration": 3600.0, "activityType": {"typeKey": "running"}},
+        {"startTimeLocal": "2026-07-11 07:00:00", "distance": 20000.0,
+         "duration": 7200.0, "activityType": {"typeKey": "trail_running"}},
+        {"startTimeLocal": "2026-07-10 07:00:00", "distance": 30000.0,
+         "duration": 5400.0, "activityType": {"typeKey": "cycling"}},
+        {"startTimeLocal": "2026-06-01 07:00:00", "distance": 99999.0,
+         "duration": 9999.0, "activityType": {"typeKey": "running"}},
+    ]
+    w = _load_window(acts, "2026-07-10", "2026-07-13", "metric")
+    assert w["activities"] == 3
+    assert w["distance_m"] == 60000
+    assert w["run_distance"] == "30.00 km"
+
+
+def test_curate_primary_device_drops_registered_devices():
+    from garmin_pipeline.tools.profile import _curate_primary_device
+
+    primary = {
+        "PrimaryTrainingDevice": {"deviceId": 123},
+        "WearableDevices": {"deviceWeights": [
+            {"displayName": "fenix 8", "deviceId": 123, "weight": 100,
+             "imageUrl": "https://example.com/huge.png"}],
+            "wearableDeviceCount": 1},
+        "RegisteredDevices": [{"deviceId": 123, "caps": ["x"] * 200}] * 2,
+    }
+    c = _curate_primary_device(primary)
+    assert "RegisteredDevices" not in c
+    assert c["PrimaryTrainingDevice"] == {"deviceId": 123}
+    weights = c["WearableDevices"]["deviceWeights"]
+    assert weights[0]["displayName"] == "fenix 8"
+    assert "imageUrl" not in weights[0]
+
+
+def test_curate_prs_labels_and_formats():
+    from garmin_pipeline.tools.profile import _curate_prs
+
+    prs = [
+        {"id": 1, "typeId": 3, "activityId": 9, "activityName": "Parkrun",
+         "actStartDateTimeInGMTFormatted": "2026-04-21T20:37:28.0",
+         "activityStartDateTimeInGMT": 1776803848000,
+         "value": 1380.96, "prTypeLabelKey": None, "poolLengthUnit": None},
+        {"id": 2, "typeId": 7, "activityName": "Autumn Squatch 50K",
+         "actStartDateTimeInGMTFormatted": "2025-11-02T12:00:00.0",
+         "value": 53402.94},
+        {"id": 3, "typeId": 31, "activityName": "Strength", "value": 124750.0},
+    ]
+    c = _curate_prs(prs)
+    assert c[0] == {"typeId": 3, "label": "5K", "value": 1380.96,
+                    "activity": "Parkrun", "date": "2026-04-21",
+                    "time": "23:01"}
+    assert c[1]["label"] == "Longest Run"
+    assert c[1]["km"] == 53.4
+    assert c[2]["label"] is None  # unknown ids pass through unlabeled
+    assert c[2]["value"] == 124750.0
+
+
+def test_agent_workout_tag():
+    from garmin_pipeline.tools._format import (
+        AGENT_TAG, is_agent_workout, tag_workout_name)
+
+    assert is_agent_workout("\U0001f916 W3 Wed Intervals")
+    assert is_agent_workout("  \U0001f916 padded")
+    assert not is_agent_workout("BR Taper - Speed Tuning")
+    assert not is_agent_workout(None)
+    assert not is_agent_workout("")
+
+    tagged = tag_workout_name("W3 Wed Intervals")
+    assert tagged == f"{AGENT_TAG} W3 Wed Intervals"
+    # Idempotent — never double-tags
+    assert tag_workout_name(tagged) == tagged

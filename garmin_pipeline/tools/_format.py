@@ -12,6 +12,22 @@ import json
 from typing import Any
 
 
+# Workouts created by AI agents carry this prefix in their name. Workouts
+# without it are athlete-created: never overwritten or deleted by agents,
+# only taken into consideration.
+AGENT_TAG = "\U0001f916"  # 🤖
+
+
+def is_agent_workout(name: Any) -> bool:
+    """True if a workout name carries the agent-ownership tag."""
+    return isinstance(name, str) and name.lstrip().startswith(AGENT_TAG)
+
+
+def tag_workout_name(name: str) -> str:
+    """Ensure a workout name carries the agent-ownership tag."""
+    return name if is_agent_workout(name) else f"{AGENT_TAG} {name}"
+
+
 def strip_empty(obj: Any) -> Any:
     """Recursively drop dict entries whose value is None or empty ("", [], {}).
 
@@ -108,7 +124,7 @@ def _first(src: dict, *keys: str) -> Any:
     return None
 
 
-def project_activity(act: dict, unit: str = "metric") -> dict:
+def project_activity(act: dict, unit: str = "imperial") -> dict:
     """Project an activity onto a compact set of training-relevant fields.
 
     Handles both shapes returned by Garmin: the flat list shape from
@@ -175,7 +191,7 @@ def project_activity(act: dict, unit: str = "metric") -> dict:
     for key, aliases in _raw.items():
         v = _first(src, *aliases)
         if v is not None:
-            out[key] = v
+            out[key] = round(v, 1) if isinstance(v, float) else v
 
     if act.get("personalRecord") or src.get("personalRecord"):
         out["is_pr"] = True

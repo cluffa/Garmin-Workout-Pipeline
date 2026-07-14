@@ -107,7 +107,7 @@ def query_health_summary(
     include_body_battery: bool = True,
     include_training_readiness: bool = True,
     include_training_status: bool = True,
-    unit: str = "metric",
+    unit: str = "imperial",
     raw: bool = False,
 ) -> str:
     """Get daily health snapshot: activity/stress/HR/body-battery summary, plus
@@ -209,15 +209,30 @@ def query_health_summary(
         return error_json("internal_error", str(e))
 
 
-# Sleep time-series keys dropped by default (kept with raw=True).
+# Redundant nested blocks inside dailySleepDTO (derivable from duration/score;
+# kept with raw=True).
+_SLEEP_DTO_DROP = ("sleepNeed", "nextSleepNeed", "sleepAlignment", "wellnessEpochList")
+
+
 def _curate_sleep(sleep: Any) -> Any:
     """Keep the nightly summary (scores, stages, HRV/SpO2/RHR averages); drop
-    per-minute movement/level/HR/stress arrays."""
+    per-minute movement/level/HR/stress arrays and redundant need/alignment
+    blocks."""
     if not isinstance(sleep, dict):
         return sleep
     out: dict[str, Any] = scalars_of(sleep)
     dto = sleep.get("dailySleepDTO")
     if isinstance(dto, dict):
+        dto = {k: v for k, v in dto.items() if k not in _SLEEP_DTO_DROP}
+        scores = dto.get("sleepScores")
+        if isinstance(scores, dict):
+            # Each score entry carries optimal-range metadata; keep the verdict.
+            dto["sleepScores"] = {
+                name: {k: v for k, v in entry.items()
+                       if k in ("value", "qualifierKey")}
+                if isinstance(entry, dict) else entry
+                for name, entry in scores.items()
+            }
         out["dailySleepDTO"] = strip_empty(dto)
     return out
 
@@ -371,7 +386,7 @@ def query_activity_metrics(
     start_date: str | None = None,
     end_date: str | None = None,
     metrics: str = "steps,stress",
-    unit: str = "metric",
+    unit: str = "imperial",
     raw: bool = False,
 ) -> str:
     """Get daily activity metrics. Available: steps, stress, respiration, spo2,
